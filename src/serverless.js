@@ -74,13 +74,15 @@ class Website extends Component {
     this.state.bucketUrl = config.bucketUrl
     await this.save()
 
-    if (config.originAccessIdentity.create) {
+    if (config.originAccessIdentityCreate) {
       log('Creating CloudFrontOriginAccessIdentity...')
       const newOAI = await createCloudFrontOriginAccessIdentity(clients, config)
 
-      this.state.originAccessIdentity.id = newOAI.id
-      this.state.originAccessIdentity.comment = config.originAccessIdentity.comment
-      config.originAccessIdentity.id = this.state.originAccessIdentity.id
+      this.state.originAccessIdentityId = newOAI.id
+      this.state.originAccessIdentityS3CanonicalUserId = newOAI.s3CanonicalUserId
+      this.state.originAccessIdentityComment = config.originAccessIdentityComment
+      config.originAccessIdentityId = this.state.originAccessIdentityId
+      config.originAccessIdentityS3CanonicalUserId = this.state.originAccessIdentityS3CanonicalUserId
 
       await this.save()
 
@@ -97,7 +99,7 @@ class Website extends Component {
           config.bucketName,
           config.indexDocument,
           config.errorDocument,
-          config.originAccessIdentity.id
+          config.originAccessIdentityS3CanonicalUserId
         ),
         uploadDir(clients, config.bucketName, config.src, this)
       ])
@@ -166,7 +168,7 @@ class Website extends Component {
     }
 
     if (config.originAccessIdentity) {
-      outputs.originAccessIdentityId = config.originAccessIdentity.id
+      outputs.originAccessIdentityId = config.originAccessIdentityId
     }
 
     return outputs
@@ -188,6 +190,9 @@ class Website extends Component {
 
     log(`Deleting bucket ${config.bucketName} from the ${config.region} region`)
     await deleteBucket(clients, config.bucketName)
+
+    // log(`Deleting OAI ${config.bucketName} from the ${config.region} region`)
+    // await deleteCloudFrontOriginAccessIdentity(clients, config.originAccessIdentity.id)
 
     if (this.state.domain) {
       log(
