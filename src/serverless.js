@@ -19,6 +19,8 @@ const {
   deleteCloudFrontDistribution,
   createOrUpdateMetaRole,
   removeAllRoles,
+  createCFOriginAccessIdentity,
+  // deployLambda,
   getMetrics
 } = require('./utils')
 
@@ -54,15 +56,35 @@ class Website extends Component {
     if (config.domain) {
       log(`Setting up domain ${config.domain}`)
 
-      if (!config.domainHostedZoneId) {
+      if (config.hostedZoneId) {
+        this.state.domainHostedZoneId = config.hostedZoneId
+        config.domainHostedZoneId = this.state.domainHostedZoneId
+      } else {
         this.state.domainHostedZoneId = await getDomainHostedZoneId(clients, config)
-        await this.save()
         config.domainHostedZoneId = this.state.domainHostedZoneId
       }
 
-      this.state.certificateArn = await ensureCertificate(clients, config, this)
       await this.save()
+
+      if (config.certificateArn) {
+        this.state.certificateArn = config.certificateArn
+      } else {
+        this.state.certificateArn = await ensureCertificate(clients, config, this)
+      }
+
+      await this.save()
+
       config.certificateArn = this.state.certificateArn
+    }
+
+    if (config.createOriginAccessIdentity) {
+      const originAccessIdentity = await createCFOriginAccessIdentity(clients, config)
+      log('created OriginAccessIdentity...')
+      config.originAccessIdentityId = originAccessIdentity.CloudFrontOriginAccessIdentity.Id
+
+      this.state.originAccessIdentityId = config.originAccessIdentityId
+
+      await this.save()
     }
 
     log(`Deploying Bucket ${config.bucketName} to region ${config.region}`)
@@ -82,7 +104,8 @@ class Website extends Component {
           clients,
           config.bucketName,
           config.indexDocument,
-          config.errorDocument
+          config.errorDocument,
+          config.originAccessIdentityId
         ),
         uploadDir(clients, config.bucketName, config.src, this)
       ])
@@ -132,6 +155,7 @@ class Website extends Component {
       )
       this.state.domain = config.domain
       this.state.nakedDomain = config.nakedDomain
+
       await this.save()
     }
 
@@ -139,11 +163,19 @@ class Website extends Component {
       `Website with bucketName ${config.bucketName} was successfully deployed to region ${config.region}`
     )
 
+    // if (config.lambda) {
+    //   deployLambda(config, clients)
+    //   this.state.lambda = config.lambda
+    //   await this.save()
+    // }
+
     const outputs = {
       bucket: this.state.bucketName,
       bucketUrl: `http://${this.state.bucketName}.s3-website.${this.state.region}.amazonaws.com`,
       distributionUrl: `https://${this.state.distributionUrl}`,
-      url: this.state.domain || `https://${this.state.distributionUrl}` // Always show custom domain first
+      url: this.state.domain || `https://${this.state.distributionUrl}`, // Always show custom domain first
+      certificateArn: this.state.certificateArn,
+      hostedZoneId: this.state.hostedZoneId
     }
 
     if (config.domain) {

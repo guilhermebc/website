@@ -97,7 +97,12 @@ const getConfig = (inputs, state) => {
     : null
   config.nakedDomain = config.domain ? getNakedDomain(config.domain) : null
   config.domainHostedZoneId = config.domain ? state.domainHostedZoneId : null
-  config.certificateArn = state.certificateArn
+  config.certificateArn = inputs.certificateArn ? inputs.certificateArn : state.certificateArn
+  config.lambdaFunctionArn = inputs.lambdaFunctionArn ? inputs.lambdaFunctionArn : null
+  config.lambdaEventType = inputs.lambdaEventType ? inputs.lambdaEventType : null
+  config.createOriginAccessIdentity = inputs.createOriginAccessIdentity
+    ? inputs.createOriginAccessIdentity
+    : false
 
   // if user input example.com, make sure we also setup www.example.com
   if (config.domain && config.domain === config.nakedDomain) {
@@ -142,6 +147,7 @@ const bucketCreation = async (clients, Bucket) => {
   }
 }
 
+// eslint-disable-next-line no-unused-vars
 const ensureBucket = async (clients, bucketName, instance) => {
   try {
     log(`Checking if bucket ${bucketName} exists.`)
@@ -239,21 +245,64 @@ const uploadDir = async (clients, bucketName, zipPath, instance) => {
   await Promise.all(uploadItems)
 }
 
-const configureBucketForHosting = async (clients, bucketName, indexDocument, errorDocument) => {
+const createCFOriginAccessIdentity = async (clients, config) => {
+  let res
+
+  try {
+    res = await clients.cf
+      .createCloudFrontOriginAccessIdentity({
+        CloudFrontOriginAccessIdentityConfig: {
+          CallerReference: Date.now().toString(),
+          Comment: `${config.bucketName}`
+        }
+      })
+      .promise()
+    return res
+  } catch (e) {
+    throw e
+  }
+}
+
+const deleteCFOriginAccessIdentity = async (clients, config) => {
+  let res
+
+  try {
+    res = await clients.cf
+      .createCloudFrontOriginAccessIdentity({
+        CloudFrontOriginAccessIdentityConfig: {
+          CallerReference: Date.now().toString(),
+          Comment: `${config.bucketName}`
+        }
+      })
+      .promise()
+    return res
+  } catch (e) {
+    throw e
+  }
+}
+
+const configureBucketForHosting = async (
+  clients,
+  bucketName,
+  indexDocument,
+  errorDocument,
+  originAccessIdentityId
+) => {
   const s3BucketPolicy = {
     Version: '2012-10-17',
+    Id: 'PolicyForCloudFrontPrivateContent',
     Statement: [
       {
-        Sid: 'PublicReadGetObject',
         Effect: 'Allow',
         Principal: {
-          AWS: '*'
+          AWS: `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${originAccessIdentityId}`
         },
-        Action: ['s3:GetObject'],
-        Resource: [`arn:aws:s3:::${bucketName}/*`]
+        Action: 's3:GetObject',
+        Resource: `arn:aws:s3:::${bucketName}/*`
       }
     ]
   }
+
   const staticHostParams = {
     Bucket: bucketName,
     WebsiteConfiguration: {
@@ -346,7 +395,7 @@ const getDomainHostedZoneId = async (clients, config) => {
   )
 
   if (!hostedZone) {
-    log(`Domain ${config.nakedDomain} was not found in your AWS account. Skipping DNS operations.`)
+    log(`Domain ${config.nakedDomain} was not found in your AWS account.Skipping DNS operations.`)
     return
   }
 
@@ -387,6 +436,7 @@ const describeCertificateByArn = async (clients, certificateArn, domain) => {
   return certificate
 }
 
+// eslint-disable-next-line no-unused-vars
 const ensureCertificate = async (clients, config, instance) => {
   const wildcardSubDomain = `*.${config.nakedDomain}`
 
@@ -400,7 +450,7 @@ const ensureCertificate = async (clients, config, instance) => {
   let certificateArn = await getCertificateArnByDomain(clients, config)
 
   if (!certificateArn) {
-    log(`Certificate for the ${config.nakedDomain} domain does not exist. Creating...`)
+    log(`Certificate for the ${config.nakedDomain} domain does not exist.Creating...`)
     certificateArn = (await clients.acm.requestCertificate(params).promise()).CertificateArn
   }
 
@@ -438,16 +488,14 @@ const ensureCertificate = async (clients, config, instance) => {
         }
       }
       await clients.route53.changeResourceRecordSets(recordParams).promise()
-      log(
-        `Your certificate was created and is being validated. It may take a few mins to validate.`
-      )
+      log(`Your certificate was created and is being validated.It may take a few mins to validate.`)
       log(
         `Please deploy again after few mins to use your newly validated certificate and activate your domain.`
       )
     } else {
       // if domain is not in account, let the user validate manually
       log(
-        `Certificate for the ${config.nakedDomain} domain was created, but not validated. Please validate it manually.`
+        `Certificate for the ${config.nakedDomain} domain was created, but not validated.Please validate it manually.`
       )
       log(`Certificate Validation Record Name: ${certificateValidationRecord.Name} `)
       log(`Certificate Validation Record Type: ${certificateValidationRecord.Type} `)
@@ -462,13 +510,13 @@ const ensureCertificate = async (clients, config, instance) => {
     // if 72 hours passed and the user did not validate the certificate
     // it will timeout and the user will need to recreate and validate the certificate manulaly
     log(
-      `Certificate validation timed out after 72 hours. Please recreate and validate the certifcate manually.`
+      `Certificate validation timed out after 72 hours.Please recreate and validate the certifcate manually.`
     )
-    log(`Your domain will not work until your certificate is created and validated .`)
+    log(`Your domain will not work until your certificate is created and validated.`)
   } else {
     // something else happened?!
     throw new Error(
-      `Failed to validate ACM certificate. Unsupported ACM certificate status ${certificate.Status}`
+      `Failed to validate ACM certificate.Unsupported ACM certificate status ${certificate.Status} `
     )
   }
 
@@ -502,13 +550,13 @@ const createCloudFrontDistribution = async (clients, config) => {
         Quantity: 0,
         Items: []
       },
+      PriceClass: 'PriceClass_All',
+      Enabled: true,
+      HttpVersion: 'http2',
       Origins: {
         Quantity: 0,
         Items: []
       },
-      PriceClass: 'PriceClass_All',
-      Enabled: true,
-      HttpVersion: 'http2',
       Origins: {
         Quantity: 1,
         Items: [
@@ -519,9 +567,13 @@ const createCloudFrontDistribution = async (clients, config) => {
               Quantity: 0,
               Items: []
             },
-            OriginPath: '',
+            OriginPath: config.originAccessIdentityId
+              ? `${config.bucketName}.s3.${config.region}.amazonaws.com`
+              : '',
             S3OriginConfig: {
-              OriginAccessIdentity: ''
+              OriginAccessIdentity: config.originAccessIdentityId
+                ? `origin - access - identity / cloudfront / ${config.originAccessIdentityId} `
+                : ''
             }
           }
         ]
@@ -562,8 +614,14 @@ const createCloudFrontDistribution = async (clients, config) => {
         MaxTTL: 31536000,
         Compress: false,
         LambdaFunctionAssociations: {
-          Quantity: 0,
-          Items: []
+          Quantity: 1,
+          Items: [
+            {
+              EventType: config.lambdaEventType,
+              IncludeBody: true,
+              LambdaFunctionARN: config.lambdaFunctionArn
+            }
+          ]
         },
         FieldLevelEncryptionId: ''
       },
@@ -582,7 +640,7 @@ const createCloudFrontDistribution = async (clients, config) => {
     distributionConfig.ViewerCertificate = {
       ACMCertificateArn: config.certificateArn,
       SSLSupportMethod: 'sni-only',
-      MinimumProtocolVersion: 'TLSv1.1_2016',
+      MinimumProtocolVersion: 'TLSv1.2_2018',
       Certificate: config.certificateArn,
       CertificateSource: 'acm'
     }
@@ -601,15 +659,15 @@ const createCloudFrontDistribution = async (clients, config) => {
   }
 
   try {
-    const res = await clients.cf.createDistribution(params).promise()
-
+    const res = await clients.cf.createDistribution(params)
     return {
       distributionId: res.Distribution.Id,
       distributionArn: res.Distribution.ARN,
       distributionUrl: res.Distribution.DomainName,
       distributionOrigins: config.distributionOrigins,
       distributionDefaults: config.distributionDefaults,
-      distributionDescription: config.distributionDescription
+      distributionDescription: config.distributionDescription,
+      distributionOriginAcessIdentity: config.originAccessIdentityId
     }
   } catch (e) {
     // throw a friendly error if trying to use an existing domain
@@ -651,7 +709,7 @@ const updateCloudFrontDistribution = async (clients, config) => {
       params.DistributionConfig.ViewerCertificate = {
         ACMCertificateArn: config.certificateArn,
         SSLSupportMethod: 'sni-only',
-        MinimumProtocolVersion: 'TLSv1.1_2016',
+        MinimumProtocolVersion: 'TLSv1.2_2018',
         Certificate: config.certificateArn,
         CertificateSource: 'acm'
       }
@@ -801,7 +859,7 @@ const removeDomainFromCloudFrontDistribution = async (clients, config) => {
 
     params.DistributionConfig.ViewerCertificate = {
       SSLSupportMethod: 'sni-only',
-      MinimumProtocolVersion: 'TLSv1.1_2016'
+      MinimumProtocolVersion: 'TLSv1.2_2018'
     }
     const res = await clients.cf.updateDistribution(params).promise()
 
@@ -872,20 +930,21 @@ const removeCloudFrontDomainDnsRecords = async (clients, config) => {
 const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccountId) => {
   // Create or update Meta Role for monitoring and more, if option is enabled.  It's enabled by default.
   if (inputs.monitoring || typeof inputs.monitoring === 'undefined') {
-    console.log('Creating or updating the meta IAM Role...');
+    // eslint-disable-next-line no-console
+    console.log('Creating or updating the meta IAM Role...')
 
-    const roleName = `${instance.name}-meta-role`;
+    const roleName = `${instance.name}-meta-role`
 
     const assumeRolePolicyDocument = {
       Version: '2012-10-17',
       Statement: {
         Effect: 'Allow',
         Principal: {
-          AWS: `arn:aws:iam::${serverlessAccountId}:root`, // Serverless's Components account
+          AWS: `arn:aws:iam::${serverlessAccountId}:root` // Serverless's Components account
         },
-        Action: 'sts:AssumeRole',
-      },
-    };
+        Action: 'sts:AssumeRole'
+      }
+    }
 
     // Create a policy that only can access APIGateway and Lambda metrics, logs from CloudWatch...
     const policy = {
@@ -902,27 +961,28 @@ const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccou
             'logs:List*',
             'logs:Describe*',
             'logs:TestMetricFilter',
-            'logs:FilterLogEvents',
-          ],
-        },
-      ],
-    };
+            'logs:FilterLogEvents'
+          ]
+        }
+      ]
+    }
 
-    const roleDescription = `The Meta Role for the Serverless Framework App: ${instance.name} Stage: ${instance.stage}`;
+    const roleDescription = `The Meta Role for the Serverless Framework App: ${instance.name} Stage: ${instance.stage}`
 
     const result = await clients.extras.deployRole({
       roleName,
       roleDescription,
       policy,
-      assumeRolePolicyDocument,
-    });
+      assumeRolePolicyDocument
+    })
 
-    instance.state.metaRoleName = roleName;
-    instance.state.metaRoleArn = result.roleArn;
+    instance.state.metaRoleName = roleName
+    instance.state.metaRoleArn = result.roleArn
 
-    console.log(`Meta IAM Role created or updated with ARN ${instance.state.metaRoleArn}`);
+    // eslint-disable-next-line no-console
+    console.log(`Meta IAM Role created or updated with ARN ${instance.state.metaRoleArn}`)
   }
-};
+}
 
 /*
  * Removes the Function & Meta Roles from aws according to the provided config
@@ -933,13 +993,27 @@ const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccou
 const removeAllRoles = async (instance, clients) => {
   // Delete Meta Role
   if (instance.state.metaRoleName) {
-    console.log('Deleting the Meta Role...');
+    // console.log('Deleting the Meta Role...');
     await clients.extras.removeRole({
-      roleName: instance.state.metaRoleName,
-    });
+      roleName: instance.state.metaRoleName
+    })
   }
-};
+}
 
+/*
+ * Updates a lambda if it exists, otherwise creates a new one.
+ *
+ * @param ${object} configs - the component config
+ * @param ${object} clients - an object containing aws sdk clients
+ */
+const deployLambda = async (configs, clients) => {
+  const params = {
+    lambdaName: configs.lambda.name, // required
+    roleArn: configs.lambda.roleArn, // required
+    lambdaSrc: configs.lambda.function // required. could also be a buffer of a zip file
+  }
+  await clients.extras.deployLambda(params)
+}
 
 /**
  * Get metrics from cloudwatch
@@ -947,30 +1021,24 @@ const removeAllRoles = async (instance, clients) => {
  * @param {*} rangeStart MUST be a moment() object
  * @param {*} rangeEnd MUST be a moment() object
  */
-const getMetrics = async (
-  region,
-  metaRoleArn,
-  distributionId,
-  rangeStart,
-  rangeEnd
-) => {
+const getMetrics = async (region, metaRoleArn, distributionId, rangeStart, rangeEnd) => {
   /**
    * Create AWS STS Token via the meta role that is deployed with the Express Component
    */
 
   // Assume Role
-  const assumeParams = {};
-  assumeParams.RoleSessionName = `session${Date.now()}`;
-  assumeParams.RoleArn = metaRoleArn;
-  assumeParams.DurationSeconds = 900;
+  const assumeParams = {}
+  assumeParams.RoleSessionName = `session${Date.now()}`
+  assumeParams.RoleArn = metaRoleArn
+  assumeParams.DurationSeconds = 900
 
   const sts = new AWS.STS({ region })
-  const resAssume = await sts.assumeRole(assumeParams).promise();
+  const resAssume = await sts.assumeRole(assumeParams).promise()
 
-  const roleCreds = {};
-  roleCreds.accessKeyId = resAssume.Credentials.AccessKeyId;
-  roleCreds.secretAccessKey = resAssume.Credentials.SecretAccessKey;
-  roleCreds.sessionToken = resAssume.Credentials.SessionToken;
+  const roleCreds = {}
+  roleCreds.accessKeyId = resAssume.Credentials.AccessKeyId
+  roleCreds.secretAccessKey = resAssume.Credentials.SecretAccessKey
+  roleCreds.sessionToken = resAssume.Credentials.SessionToken
 
   /**
    * Instantiate a new Extras instance w/ the temporary credentials
@@ -978,22 +1046,22 @@ const getMetrics = async (
 
   const extras = new AWS.Extras({
     credentials: roleCreds,
-    region,
+    region
   })
 
   const resources = [
     {
       type: 'aws_cloudfront',
-      distributionId,
-    },
-  ];
+      distributionId
+    }
+  ]
 
   return await extras.getMetrics({
     rangeStart,
     rangeEnd,
-    resources,
-  });
-};
+    resources
+  })
+}
 
 module.exports = {
   log,
@@ -1013,10 +1081,13 @@ module.exports = {
   createCloudFrontDistribution,
   updateCloudFrontDistribution,
   invalidateCloudfrontDistribution,
+  createCFOriginAccessIdentity,
+  deleteCFOriginAccessIdentity,
   configureDnsForCloudFrontDistribution,
   deleteCloudFrontDistribution,
   removeDomainFromCloudFrontDistribution,
   removeCloudFrontDomainDnsRecords,
   removeAllRoles,
-  getMetrics,
+  deployLambda,
+  getMetrics
 }

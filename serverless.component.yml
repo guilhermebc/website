@@ -1,11 +1,6 @@
-name: website
-version: 1.1.2
-org: serverlessinc
-description: Deploys Serverless Websites
-keywords: aws, serverless, website
-repo: https://github.com/serverless-components/website
-license: MIT
-src: ./src
-types:
-  providers:
-    - aws
+name: guilhermebc-website
+version: 0.0.1
+author: guilhermebc
+org: guilhermebc
+main: ./src
+src: './src'

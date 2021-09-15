@@ -1,19 +1,19 @@
 {
-  "name": "@serverless/website",
-  "version": "4.0.0",
-  "main": "./serverless.js",
+  "name": "@serverless/guilhermebc-website",
+  "version": "0.0.1",
+  "main": "./src/serverless.js",
   "publishConfig": {
     "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/serverless-components/website"
+    "url": "https://github.com/guilhermebc/website"
   },
   "scripts": {
     "test": "jest ./tests/integration.test.js --testEnvironment node",
     "lint": "eslint . --fix --cache"
   },
-  "author": "Serverless, Inc.",
+  "author": "guilhermebc",
   "license": "Apache",
   "dependencies": {},
   "devDependencies": {
