@@ -83,6 +83,9 @@ const getConfig = (inputs, state) => {
   config.bucketUrl = `http://${config.bucketName}.s3-website-${config.region}.amazonaws.com`
   config.src = inputs.src
 
+  // origin access identity
+  config.originAccessIdentity = inputs.originAccessIdentity ? inputs.originAccessIdentity : null
+
   config.distributionId = state.distributionId
   config.distributionUrl = state.distributionUrl
   config.distributionArn = state.distributionArn
@@ -239,21 +242,33 @@ const uploadDir = async (clients, bucketName, zipPath, instance) => {
   await Promise.all(uploadItems)
 }
 
-const configureBucketForHosting = async (clients, bucketName, indexDocument, errorDocument) => {
+const configureBucketForHosting = async (
+  clients,
+  bucketName,
+  indexDocument,
+  errorDocument,
+  originAccessIdentityId
+) => {
   const s3BucketPolicy = {
     Version: '2012-10-17',
+    Id: 'PolicyForCloudFrontPrivateContent',
     Statement: [
       {
-        Sid: 'PublicReadGetObject',
         Effect: 'Allow',
         Principal: {
-          AWS: '*'
+          AWS: `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${originAccessIdentityId}`
         },
-        Action: ['s3:GetObject'],
-        Resource: [`arn:aws:s3:::${bucketName}/*`]
+        Action: 's3:GetObject',
+        Resource: `arn:aws:s3:::${bucketName}/*`
       }
     ]
   }
+
+  const s3Acl = {
+    Bucket: bucketName,
+    ACL: 'private'
+  }
+
   const staticHostParams = {
     Bucket: bucketName,
     WebsiteConfiguration: {
@@ -286,6 +301,8 @@ const configureBucketForHosting = async (clients, bucketName, indexDocument, err
         Policy: JSON.stringify(s3BucketPolicy)
       })
       .promise()
+
+    await clients.s3.regular.putBucketAcl(s3Acl).promise()
 
     await clients.s3.regular
       .putBucketCors({
@@ -473,6 +490,52 @@ const ensureCertificate = async (clients, config, instance) => {
   }
 
   return certificateArn
+}
+
+const createCloudFrontOriginAccessIdentity = async (clients, config) => {
+  try {
+    const res = await clients.cf
+      .createCloudFrontOriginAccessIdentity({
+        CloudFrontOriginAccessIdentityConfig: {
+          CallerReference: String(Date.now()),
+          Comment: `${config.bucketName}`
+        }
+      })
+      .promise()
+    return {
+      id: res.CloudFrontOriginAccessIdentity.Id
+    }
+  } catch (e) {
+    throw e
+  }
+}
+
+const getCloudFrontOriginAccessIdentity = async (clients, config) => {
+  try {
+    const res = await clients.cf.getCloudFrontOriginAccessIdentityConfig({
+      Comment: config.originAccessIdentity.comment
+    })
+    return res
+  } catch (e) {
+    throw e
+  }
+}
+
+const deleteCloudFrontOriginAccessIdentity = async (clients, id) => {
+  let res
+
+  try {
+    res = await clients.cf
+      .deleteCloudFrontOriginAccessIdentity({
+        CloudFrontOriginAccessIdentityConfig: {
+          Id: id
+        }
+      })
+      .promise()
+    return res
+  } catch (e) {
+    throw e
+  }
 }
 
 const createCloudFrontDistribution = async (clients, config) => {
@@ -1010,6 +1073,9 @@ module.exports = {
   deleteBucket,
   getDomainHostedZoneId,
   ensureCertificate,
+  createCloudFrontOriginAccessIdentity,
+  getCloudFrontOriginAccessIdentity,
+  deleteCloudFrontOriginAccessIdentity,
   createCloudFrontDistribution,
   updateCloudFrontDistribution,
   invalidateCloudfrontDistribution,
@@ -1018,5 +1084,5 @@ module.exports = {
   removeDomainFromCloudFrontDistribution,
   removeCloudFrontDomainDnsRecords,
   removeAllRoles,
-  getMetrics,
+  getMetrics
 }

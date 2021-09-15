@@ -10,6 +10,7 @@ const {
   deleteBucket,
   getDomainHostedZoneId,
   ensureCertificate,
+  createCloudFrontOriginAccessIdentity,
   updateCloudFrontDistribution,
   createCloudFrontDistribution,
   invalidateCloudfrontDistribution,
@@ -73,6 +74,19 @@ class Website extends Component {
     this.state.bucketUrl = config.bucketUrl
     await this.save()
 
+    if (config.originAccessIdentity.create) {
+      log('Creating CloudFrontOriginAccessIdentity...')
+      const newOAI = await createCloudFrontOriginAccessIdentity(clients, config)
+
+      this.state.originAccessIdentity.id = newOAI.id
+      this.state.originAccessIdentity.comment = config.originAccessIdentity.comment
+      config.originAccessIdentity.id = this.state.originAccessIdentity.id
+
+      await this.save()
+
+      log('CloudFrontOriginAccessIdentity created')
+    }
+
     log(`Deploying Website`)
     if (!this.state.configured) {
       log(`Configuring bucket for hosting`)
@@ -82,7 +96,8 @@ class Website extends Component {
           clients,
           config.bucketName,
           config.indexDocument,
-          config.errorDocument
+          config.errorDocument,
+          config.originAccessIdentity.id
         ),
         uploadDir(clients, config.bucketName, config.src, this)
       ])
@@ -148,6 +163,10 @@ class Website extends Component {
 
     if (config.domain) {
       outputs.domain = `https://${config.domain}`
+    }
+
+    if (config.originAccessIdentity) {
+      outputs.originAccessIdentityId = config.originAccessIdentity.id
     }
 
     return outputs
