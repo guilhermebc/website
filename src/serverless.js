@@ -11,6 +11,7 @@ const {
   getDomainHostedZoneId,
   ensureCertificate,
   createCloudFrontOriginAccessIdentity,
+  deleteCloudFrontOriginAccessIdentity,
   updateCloudFrontDistribution,
   createCloudFrontDistribution,
   invalidateCloudfrontDistribution,
@@ -74,23 +75,24 @@ class Website extends Component {
     this.state.bucketUrl = config.bucketUrl
     await this.save()
 
-    if (config.originAccessIdentityCreate) {
-      log('Creating CloudFrontOriginAccessIdentity...')
-      const newOAI = await createCloudFrontOriginAccessIdentity(clients, config)
-
-      this.state.originAccessIdentityId = newOAI.id
-      this.state.originAccessIdentityS3CanonicalUserId = newOAI.s3CanonicalUserId
-      this.state.originAccessIdentityComment = config.originAccessIdentityComment
-      config.originAccessIdentityId = this.state.originAccessIdentityId
-      config.originAccessIdentityS3CanonicalUserId = this.state.originAccessIdentityS3CanonicalUserId
-
-      await this.save()
-
-      log('CloudFrontOriginAccessIdentity created')
-    }
-
     log(`Deploying Website`)
     if (!this.state.configured) {
+      if (config.originAccessIdentityCreate) {
+        log('Creating CloudFrontOriginAccessIdentity...')
+        const newOAI = await createCloudFrontOriginAccessIdentity(clients, config)
+
+        this.state.originAccessIdentityId = newOAI.id
+        this.state.originAccessIdentityS3CanonicalUserId = newOAI.s3CanonicalUserId
+        this.state.originAccessIdentityETag = newOAI.eTag
+        config.originAccessIdentityId = this.state.originAccessIdentityId
+        config.originAccessIdentityS3CanonicalUserId = this.state.originAccessIdentityS3CanonicalUserId
+        config.originAccessIdentityETag = this.state.originAccessIdentityETag
+
+        await this.save()
+
+        log('CloudFrontOriginAccessIdentity created')
+      }
+
       log(`Configuring bucket for hosting`)
       log(`Uploading Website files`)
       await Promise.all([
@@ -191,9 +193,6 @@ class Website extends Component {
     log(`Deleting bucket ${config.bucketName} from the ${config.region} region`)
     await deleteBucket(clients, config.bucketName)
 
-    // log(`Deleting OAI ${config.bucketName} from the ${config.region} region`)
-    // await deleteCloudFrontOriginAccessIdentity(clients, config.originAccessIdentity.id)
-
     if (this.state.domain) {
       log(
         `Removing domain "${this.state.domain}" from CloudFront distribution with ID ${this.state.distributionId}`
@@ -210,6 +209,9 @@ class Website extends Component {
       log(`Deleting Cloudfront distribution ${this.state.distributionId}`)
       await deleteCloudFrontDistribution(clients, this.state.distributionId)
     }
+
+    // log(`Deleting OAI ${config.originAccessIdentityId} etag ${config.originAccessIdentityETag}`)
+    // await deleteCloudFrontOriginAccessIdentity(clients, config.originAccessIdentityId)
 
     log(`Website ${config.bucketName} was successfully removed from region ${config.region}`)
 

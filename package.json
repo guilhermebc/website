@@ -1,5 +1,5 @@
 {
-  "name": "@serverless/guilhermebc-website",
+  "name": "@guilhermebc/serverless-website",
   "version": "0.0.1",
   "main": "./src/serverless.js",
   "publishConfig": {

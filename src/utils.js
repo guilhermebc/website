@@ -84,13 +84,9 @@ const getConfig = (inputs, state) => {
   config.src = inputs.src
 
   // origin access identity
-  if (inputs.originAccessIdentityCreate) {
-    config.originAccessIdentityCreate = inputs.originAccessIdentityCreate
-    config.originAccessIdentityComment = inputs.originAccessIdentityComment
-  } else {
-    config.originAccessIdentityCreate = false
-    config.originAccessIdentityComment = null
-  }
+  config.originAccessIdentityCreate = inputs.originAccessIdentityCreate
+    ? inputs.originAccessIdentityCreate
+    : false
 
   config.distributionId = state.distributionId
   config.distributionUrl = state.distributionUrl
@@ -505,23 +501,24 @@ const createCloudFrontOriginAccessIdentity = async (clients, config) => {
       .createCloudFrontOriginAccessIdentity({
         CloudFrontOriginAccessIdentityConfig: {
           CallerReference: String(Date.now()),
-          Comment: `${config.bucketName}`
+          Comment: `${config.bucketName}.s3.${config.region}.amazonaws.com`
         }
       })
       .promise()
     return {
       id: res.CloudFrontOriginAccessIdentity.Id,
-      s3CanonicalUserId: res.CloudFrontOriginAccessIdentity.S3CanonicalUserId
+      s3CanonicalUserId: res.CloudFrontOriginAccessIdentity.S3CanonicalUserId,
+      eTag: res.ETag
     }
   } catch (e) {
     throw e
   }
 }
 
-const getCloudFrontOriginAccessIdentity = async (clients, config) => {
+const getCloudFrontOriginAccessIdentityConfig = async (clients, id) => {
   try {
     const res = await clients.cf.getCloudFrontOriginAccessIdentityConfig({
-      Comment: config.originAccessIdentity.comment
+      Id: id
     })
     return res
   } catch (e) {
@@ -530,18 +527,18 @@ const getCloudFrontOriginAccessIdentity = async (clients, config) => {
 }
 
 const deleteCloudFrontOriginAccessIdentity = async (clients, id) => {
-  let res
-
   try {
-    res = await clients.cf
+    const getConfigResult = await getCloudFrontOriginAccessIdentityConfig(clients, id)
+    const ETagResult = getConfigResult.ETag
+    const deleteResult = await clients.cf
       .deleteCloudFrontOriginAccessIdentity({
-        CloudFrontOriginAccessIdentityConfig: {
-          Id: id
-        }
+        Id: id,
+        IfMatch: ETagResult
       })
       .promise()
-    return res
+    return deleteResult
   } catch (e) {
+    console.log('error at delete OAI', e)
     throw e
   }
 }
@@ -724,7 +721,7 @@ const updateCloudFrontDistribution = async (clients, config) => {
       params.DistributionConfig.ViewerCertificate = {
         ACMCertificateArn: config.certificateArn,
         SSLSupportMethod: 'sni-only',
-        MinimumProtocolVersion: 'TLSv1.1_2016',
+        MinimumProtocolVersion: 'TLSv1.2_2018',
         Certificate: config.certificateArn,
         CertificateSource: 'acm'
       }
@@ -1077,7 +1074,7 @@ module.exports = {
   getDomainHostedZoneId,
   ensureCertificate,
   createCloudFrontOriginAccessIdentity,
-  getCloudFrontOriginAccessIdentity,
+  getCloudFrontOriginAccessIdentityConfig,
   deleteCloudFrontOriginAccessIdentity,
   createCloudFrontDistribution,
   updateCloudFrontDistribution,
