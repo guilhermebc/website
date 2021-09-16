@@ -267,9 +267,19 @@ const configureBucketForHosting = async (
     ]
   }
 
-  const s3Acl = {
-    Bucket: bucketName,
+  const putBucketAclParams = {
+    Bucket: `${bucketName}`,
     ACL: 'private'
+  }
+
+  const s3putPublicAccessBlockParams = {
+    Bucket: `${bucketName}`,
+    PublicAccessBlockConfiguration: {
+      BlockPublicAcls: true,
+      BlockPublicPolicy: true,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: true
+    }
   }
 
   const staticHostParams = {
@@ -305,7 +315,9 @@ const configureBucketForHosting = async (
       })
       .promise()
 
-    await clients.s3.regular.putBucketAcl(s3Acl).promise()
+    await clients.s3.regular.putBucketAcl(putBucketAclParams).promise()
+
+    await clients.s3.regular.putPublicAccessBlock(s3putPublicAccessBlockParams).promise()
 
     await clients.s3.regular
       .putBucketCors({
@@ -652,7 +664,7 @@ const createCloudFrontDistribution = async (clients, config) => {
     distributionConfig.ViewerCertificate = {
       ACMCertificateArn: config.certificateArn,
       SSLSupportMethod: 'sni-only',
-      MinimumProtocolVersion: 'TLSv1.1_2016',
+      MinimumProtocolVersion: 'TLSv1.2_2018',
       Certificate: config.certificateArn,
       CertificateSource: 'acm'
     }
@@ -871,7 +883,7 @@ const removeDomainFromCloudFrontDistribution = async (clients, config) => {
 
     params.DistributionConfig.ViewerCertificate = {
       SSLSupportMethod: 'sni-only',
-      MinimumProtocolVersion: 'TLSv1.1_2016'
+      MinimumProtocolVersion: 'TLSv1.2_2018'
     }
     const res = await clients.cf.updateDistribution(params).promise()
 
