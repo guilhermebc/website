@@ -83,6 +83,11 @@ const getConfig = (inputs, state) => {
   config.bucketUrl = `http://${config.bucketName}.s3-website-${config.region}.amazonaws.com`
   config.src = inputs.src
 
+  // origin access identity
+  config.originAccessIdentityCreate = inputs.originAccessIdentityCreate
+    ? inputs.originAccessIdentityCreate
+    : false
+
   config.distributionId = state.distributionId
   config.distributionUrl = state.distributionUrl
   config.distributionArn = state.distributionArn
@@ -239,21 +244,44 @@ const uploadDir = async (clients, bucketName, zipPath, instance) => {
   await Promise.all(uploadItems)
 }
 
-const configureBucketForHosting = async (clients, bucketName, indexDocument, errorDocument) => {
+const configureBucketForHosting = async (
+  clients,
+  bucketName,
+  indexDocument,
+  errorDocument,
+  originAccessIdentityCanonicalUserId
+) => {
   const s3BucketPolicy = {
-    Version: '2012-10-17',
+    Id: 'PolicyForCloudFrontPrivateContent',
+    Version: '2008-10-17',
     Statement: [
       {
-        Sid: 'PublicReadGetObject',
-        Effect: 'Allow',
-        Principal: {
-          AWS: '*'
-        },
+        Sid: '1',
         Action: ['s3:GetObject'],
-        Resource: [`arn:aws:s3:::${bucketName}/*`]
+        Effect: 'Allow',
+        Resource: `arn:aws:s3:::${bucketName}/*`,
+        Principal: {
+          CanonicalUser: originAccessIdentityCanonicalUserId
+        }
       }
     ]
   }
+
+  const putBucketAclParams = {
+    Bucket: `${bucketName}`,
+    ACL: 'private'
+  }
+
+  const s3putPublicAccessBlockParams = {
+    Bucket: `${bucketName}`,
+    PublicAccessBlockConfiguration: {
+      BlockPublicAcls: true,
+      BlockPublicPolicy: true,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: true
+    }
+  }
+
   const staticHostParams = {
     Bucket: bucketName,
     WebsiteConfiguration: {
@@ -286,6 +314,10 @@ const configureBucketForHosting = async (clients, bucketName, indexDocument, err
         Policy: JSON.stringify(s3BucketPolicy)
       })
       .promise()
+
+    await clients.s3.regular.putBucketAcl(putBucketAclParams).promise()
+
+    await clients.s3.regular.putPublicAccessBlock(s3putPublicAccessBlockParams).promise()
 
     await clients.s3.regular
       .putBucketCors({
@@ -475,6 +507,54 @@ const ensureCertificate = async (clients, config, instance) => {
   return certificateArn
 }
 
+const createCloudFrontOriginAccessIdentity = async (clients, config) => {
+  try {
+    const res = await clients.cf
+      .createCloudFrontOriginAccessIdentity({
+        CloudFrontOriginAccessIdentityConfig: {
+          CallerReference: String(Date.now()),
+          Comment: `${config.bucketName}.s3.${config.region}.amazonaws.com`
+        }
+      })
+      .promise()
+    return {
+      id: res.CloudFrontOriginAccessIdentity.Id,
+      s3CanonicalUserId: res.CloudFrontOriginAccessIdentity.S3CanonicalUserId,
+      eTag: res.ETag
+    }
+  } catch (e) {
+    throw e
+  }
+}
+
+const getCloudFrontOriginAccessIdentityConfig = async (clients, id) => {
+  try {
+    const res = await clients.cf.getCloudFrontOriginAccessIdentityConfig({
+      Id: id
+    })
+    return res
+  } catch (e) {
+    throw e
+  }
+}
+
+const deleteCloudFrontOriginAccessIdentity = async (clients, id) => {
+  try {
+    const getConfigResult = await getCloudFrontOriginAccessIdentityConfig(clients, id)
+    const ETagResult = getConfigResult.ETag
+    const deleteResult = await clients.cf
+      .deleteCloudFrontOriginAccessIdentity({
+        Id: id,
+        IfMatch: ETagResult
+      })
+      .promise()
+    return deleteResult
+  } catch (e) {
+    console.log('error at delete OAI', e)
+    throw e
+  }
+}
+
 const createCloudFrontDistribution = async (clients, config) => {
   const params = {
     DistributionConfig: {
@@ -521,7 +601,9 @@ const createCloudFrontDistribution = async (clients, config) => {
             },
             OriginPath: '',
             S3OriginConfig: {
-              OriginAccessIdentity: ''
+              OriginAccessIdentity: config.originAccessIdentityId
+                ? `origin-access-identity/cloudfront/${config.originAccessIdentityId}`
+                : ''
             }
           }
         ]
@@ -582,7 +664,7 @@ const createCloudFrontDistribution = async (clients, config) => {
     distributionConfig.ViewerCertificate = {
       ACMCertificateArn: config.certificateArn,
       SSLSupportMethod: 'sni-only',
-      MinimumProtocolVersion: 'TLSv1.1_2016',
+      MinimumProtocolVersion: 'TLSv1.2_2018',
       Certificate: config.certificateArn,
       CertificateSource: 'acm'
     }
@@ -651,7 +733,7 @@ const updateCloudFrontDistribution = async (clients, config) => {
       params.DistributionConfig.ViewerCertificate = {
         ACMCertificateArn: config.certificateArn,
         SSLSupportMethod: 'sni-only',
-        MinimumProtocolVersion: 'TLSv1.1_2016',
+        MinimumProtocolVersion: 'TLSv1.2_2018',
         Certificate: config.certificateArn,
         CertificateSource: 'acm'
       }
@@ -801,7 +883,7 @@ const removeDomainFromCloudFrontDistribution = async (clients, config) => {
 
     params.DistributionConfig.ViewerCertificate = {
       SSLSupportMethod: 'sni-only',
-      MinimumProtocolVersion: 'TLSv1.1_2016'
+      MinimumProtocolVersion: 'TLSv1.2_2018'
     }
     const res = await clients.cf.updateDistribution(params).promise()
 
@@ -872,20 +954,20 @@ const removeCloudFrontDomainDnsRecords = async (clients, config) => {
 const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccountId) => {
   // Create or update Meta Role for monitoring and more, if option is enabled.  It's enabled by default.
   if (inputs.monitoring || typeof inputs.monitoring === 'undefined') {
-    console.log('Creating or updating the meta IAM Role...');
+    console.log('Creating or updating the meta IAM Role...')
 
-    const roleName = `${instance.name}-meta-role`;
+    const roleName = `${instance.name}-meta-role`
 
     const assumeRolePolicyDocument = {
       Version: '2012-10-17',
       Statement: {
         Effect: 'Allow',
         Principal: {
-          AWS: `arn:aws:iam::${serverlessAccountId}:root`, // Serverless's Components account
+          AWS: `arn:aws:iam::${serverlessAccountId}:root` // Serverless's Components account
         },
-        Action: 'sts:AssumeRole',
-      },
-    };
+        Action: 'sts:AssumeRole'
+      }
+    }
 
     // Create a policy that only can access APIGateway and Lambda metrics, logs from CloudWatch...
     const policy = {
@@ -902,27 +984,27 @@ const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccou
             'logs:List*',
             'logs:Describe*',
             'logs:TestMetricFilter',
-            'logs:FilterLogEvents',
-          ],
-        },
-      ],
-    };
+            'logs:FilterLogEvents'
+          ]
+        }
+      ]
+    }
 
-    const roleDescription = `The Meta Role for the Serverless Framework App: ${instance.name} Stage: ${instance.stage}`;
+    const roleDescription = `The Meta Role for the Serverless Framework App: ${instance.name} Stage: ${instance.stage}`
 
     const result = await clients.extras.deployRole({
       roleName,
       roleDescription,
       policy,
-      assumeRolePolicyDocument,
-    });
+      assumeRolePolicyDocument
+    })
 
-    instance.state.metaRoleName = roleName;
-    instance.state.metaRoleArn = result.roleArn;
+    instance.state.metaRoleName = roleName
+    instance.state.metaRoleArn = result.roleArn
 
-    console.log(`Meta IAM Role created or updated with ARN ${instance.state.metaRoleArn}`);
+    console.log(`Meta IAM Role created or updated with ARN ${instance.state.metaRoleArn}`)
   }
-};
+}
 
 /*
  * Removes the Function & Meta Roles from aws according to the provided config
@@ -933,13 +1015,12 @@ const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccou
 const removeAllRoles = async (instance, clients) => {
   // Delete Meta Role
   if (instance.state.metaRoleName) {
-    console.log('Deleting the Meta Role...');
+    console.log('Deleting the Meta Role...')
     await clients.extras.removeRole({
-      roleName: instance.state.metaRoleName,
-    });
+      roleName: instance.state.metaRoleName
+    })
   }
-};
-
+}
 
 /**
  * Get metrics from cloudwatch
@@ -947,30 +1028,24 @@ const removeAllRoles = async (instance, clients) => {
  * @param {*} rangeStart MUST be a moment() object
  * @param {*} rangeEnd MUST be a moment() object
  */
-const getMetrics = async (
-  region,
-  metaRoleArn,
-  distributionId,
-  rangeStart,
-  rangeEnd
-) => {
+const getMetrics = async (region, metaRoleArn, distributionId, rangeStart, rangeEnd) => {
   /**
    * Create AWS STS Token via the meta role that is deployed with the Express Component
    */
 
   // Assume Role
-  const assumeParams = {};
-  assumeParams.RoleSessionName = `session${Date.now()}`;
-  assumeParams.RoleArn = metaRoleArn;
-  assumeParams.DurationSeconds = 900;
+  const assumeParams = {}
+  assumeParams.RoleSessionName = `session${Date.now()}`
+  assumeParams.RoleArn = metaRoleArn
+  assumeParams.DurationSeconds = 900
 
   const sts = new AWS.STS({ region })
-  const resAssume = await sts.assumeRole(assumeParams).promise();
+  const resAssume = await sts.assumeRole(assumeParams).promise()
 
-  const roleCreds = {};
-  roleCreds.accessKeyId = resAssume.Credentials.AccessKeyId;
-  roleCreds.secretAccessKey = resAssume.Credentials.SecretAccessKey;
-  roleCreds.sessionToken = resAssume.Credentials.SessionToken;
+  const roleCreds = {}
+  roleCreds.accessKeyId = resAssume.Credentials.AccessKeyId
+  roleCreds.secretAccessKey = resAssume.Credentials.SecretAccessKey
+  roleCreds.sessionToken = resAssume.Credentials.SessionToken
 
   /**
    * Instantiate a new Extras instance w/ the temporary credentials
@@ -978,22 +1053,22 @@ const getMetrics = async (
 
   const extras = new AWS.Extras({
     credentials: roleCreds,
-    region,
+    region
   })
 
   const resources = [
     {
       type: 'aws_cloudfront',
-      distributionId,
-    },
-  ];
+      distributionId
+    }
+  ]
 
   return await extras.getMetrics({
     rangeStart,
     rangeEnd,
-    resources,
-  });
-};
+    resources
+  })
+}
 
 module.exports = {
   log,
@@ -1010,6 +1085,9 @@ module.exports = {
   deleteBucket,
   getDomainHostedZoneId,
   ensureCertificate,
+  createCloudFrontOriginAccessIdentity,
+  getCloudFrontOriginAccessIdentityConfig,
+  deleteCloudFrontOriginAccessIdentity,
   createCloudFrontDistribution,
   updateCloudFrontDistribution,
   invalidateCloudfrontDistribution,
@@ -1018,5 +1096,5 @@ module.exports = {
   removeDomainFromCloudFrontDistribution,
   removeCloudFrontDomainDnsRecords,
   removeAllRoles,
-  getMetrics,
+  getMetrics
 }
