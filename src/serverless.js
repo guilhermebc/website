@@ -11,7 +11,7 @@ const {
   getDomainHostedZoneId,
   ensureCertificate,
   createCloudFrontOriginAccessIdentity,
-  deleteCloudFrontOriginAccessIdentity,
+  // deleteCloudFrontOriginAccessIdentity,
   updateCloudFrontDistribution,
   createCloudFrontDistribution,
   invalidateCloudfrontDistribution,
