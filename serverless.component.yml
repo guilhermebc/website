@@ -1,6 +1,6 @@
-name: guilhermebc-website
-version: 0.1.12
-org: guilhermebc
+name: picpay-serverless-website
+version: 0.0.1
+org: plataformaweb
 repo: https://github.com/guilhermebc/website
 license: MIT
 src: ./src
