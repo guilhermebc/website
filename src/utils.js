@@ -619,7 +619,7 @@ const createCloudFrontDistribution = async (clients, config) => {
         SmoothStreaming: false,
         DefaultTTL: 0,
         MaxTTL: 31536000,
-        Compress: false,
+        Compress: true,
         LambdaFunctionAssociations: {
           Quantity: 0,
           Items: []
