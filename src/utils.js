@@ -4,7 +4,6 @@ const path = require('path')
 const klawSync = require('klaw-sync')
 const mime = require('mime-types')
 const https = require('https')
-const { parseDomain } = require('parse-domain')
 const agent = new https.Agent({
   keepAlive: true
 })
@@ -53,17 +52,6 @@ const getClients = (credentials, region) => {
   }
 }
 
-const getNakedDomain = (domain) => {
-  const parsedDomain = parseDomain(domain)
-
-  if (!parsedDomain.topLevelDomains) {
-    throw new Error(`"${domain}" is not a valid domain.`)
-  }
-
-  const nakedDomain = `${parsedDomain.domain}.${parsedDomain.topLevelDomains.join('.')}`
-  return nakedDomain
-}
-
 const shouldConfigureNakedDomain = (domain) => {
   if (!domain) {
     return false
@@ -82,12 +70,9 @@ const getConfig = (inputs, state) => {
   config.region = inputs.region || state.region || 'us-east-1'
   config.bucketUrl = `http://${config.bucketName}.s3-website-${config.region}.amazonaws.com`
   config.src = inputs.src
-
-  // origin access identity
   config.originAccessIdentityCreate = inputs.originAccessIdentityCreate
     ? inputs.originAccessIdentityCreate
     : false
-
   config.distributionId = state.distributionId
   config.distributionUrl = state.distributionUrl
   config.distributionArn = state.distributionArn
@@ -95,19 +80,11 @@ const getConfig = (inputs, state) => {
   config.distributionDescription =
     inputs.distributionDescription || `Website distribution for bucket ${config.bucketName}`
   config.distributionDefaults = inputs.distributionDefaults
-
-  // in case user specified protocol
-  config.domain = inputs.domain
-    ? inputs.domain.replace('https://', '').replace('http://', '')
-    : null
-  config.nakedDomain = config.domain ? getNakedDomain(config.domain) : null
+  config.hostname = inputs.hostname ? inputs.hostname : null
+  config.nakedDomain = inputs.domain ? inputs.domain : null
+  config.domain = `${config.hostname}.${config.nakedDomain}`
   config.domainHostedZoneId = config.domain ? state.domainHostedZoneId : null
   config.certificateArn = state.certificateArn
-
-  // if user input example.com, make sure we also setup www.example.com
-  if (config.domain && config.domain === config.nakedDomain) {
-    config.domain = `www.${config.domain}`
-  }
 
   return config
 }
@@ -550,7 +527,7 @@ const deleteCloudFrontOriginAccessIdentity = async (clients, id) => {
       .promise()
     return deleteResult
   } catch (e) {
-    console.log('error at delete OAI', e)
+    log('error at delete OAI')
     throw e
   }
 }
@@ -684,6 +661,11 @@ const createCloudFrontDistribution = async (clients, config) => {
 
   try {
     const res = await clients.cf.createDistribution(params).promise()
+
+    await clients.cf.associateAlias({
+      Alias: `${config.domain}`,
+      TargetDistributionId: res.Distribution.Id
+    })
 
     return {
       distributionId: res.Distribution.Id,
@@ -954,7 +936,7 @@ const removeCloudFrontDomainDnsRecords = async (clients, config) => {
 const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccountId) => {
   // Create or update Meta Role for monitoring and more, if option is enabled.  It's enabled by default.
   if (inputs.monitoring || typeof inputs.monitoring === 'undefined') {
-    console.log('Creating or updating the meta IAM Role...')
+    log('Creating or updating the meta IAM Role...')
 
     const roleName = `${instance.name}-meta-role`
 
@@ -1002,7 +984,7 @@ const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccou
     instance.state.metaRoleName = roleName
     instance.state.metaRoleArn = result.roleArn
 
-    console.log(`Meta IAM Role created or updated with ARN ${instance.state.metaRoleArn}`)
+    log(`Meta IAM Role created or updated with ARN ${instance.state.metaRoleArn}`)
   }
 }
 
@@ -1015,7 +997,7 @@ const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccou
 const removeAllRoles = async (instance, clients) => {
   // Delete Meta Role
   if (instance.state.metaRoleName) {
-    console.log('Deleting the Meta Role...')
+    log('Deleting the Meta Role...')
     await clients.extras.removeRole({
       roleName: instance.state.metaRoleName
     })
